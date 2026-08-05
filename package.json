@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "build": "bash scripts/build.sh",
+    "build": "vite build --outDir dist/client --emptyOutDir",
     "build:vercel": "vite build --outDir dist/client --emptyOutDir",
     "typecheck": "tsc -p tsconfig.app.json",
     "lint": "concurrently npm:typecheck npm:lint:eslint",
