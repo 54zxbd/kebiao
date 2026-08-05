@@ -1,0 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./tailwind-theme.css";
+@import "./typography.css";
+
+@layer utilities {
+  .bg-app-shell {
+    background-color: var(--app-shell);
+  }
+
+  .shadow-app-shell {
+    box-shadow: 0 0 32px hsl(220 10% 20% / 0.1);
+  }
+
+  .app-safe-top {
+    padding-top: calc(0.5rem + env(safe-area-inset-top));
+  }
+
+  .pb-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .pb-app-nav {
+    padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+  }
+
+  .pb-safe {
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+  }
+
+  html {
+    background: var(--app-shell);
+    overflow-x: hidden;
+    overscroll-behavior: none;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    background: var(--app-shell);
+    letter-spacing: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  a,
+  input,
+  select,
+  textarea {
+    touch-action: manipulation;
+  }
+}
