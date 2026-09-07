@@ -84,7 +84,8 @@ export function getCourseStatus(
   const endMin = timeToMinutes(endPeriod.endTime);
 
   if (nowMinutes < startMin) return 'upcoming';
-  if (nowMinutes >= endMin) return 'finished';
+  // 下课满 5 分钟后才显示"已结束"（缓冲，避免刚下课立即变灰）
+  if (nowMinutes >= endMin + 5) return 'finished';
   return 'ongoing';
 }
 

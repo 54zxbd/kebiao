@@ -50,6 +50,20 @@ export default function DayViewPage() {
 
   const isToday = isSameDay(currentDate, new Date());
 
+  // 状态判定的参考时间：只有查看"今天"时用实时时间判断进行中/已结束；
+  // 查看未来日期统一判为"未开始"，查看过去日期统一判为"已结束"，避免明天的课显示已结束。
+  const statusDate = useMemo(() => {
+    const now = new Date();
+    if (isSameDay(currentDate, now)) return now;
+    const d = new Date(currentDate);
+    if (currentDate.getTime() > now.getTime()) {
+      d.setHours(0, 0, 0, 0); // 未来日期：0 点 → upcoming
+    } else {
+      d.setHours(23, 59, 59, 999); // 过去日期：23:59 → finished
+    }
+    return d;
+  }, [currentDate]);
+
   const goPrev = () => setCurrentDate((d) => addDays(d, -1));
   const goNext = () => setCurrentDate((d) => addDays(d, 1));
   const goToday = () => setCurrentDate(new Date());
@@ -158,7 +172,7 @@ export default function DayViewPage() {
                 key={course.id}
                 course={course}
                 schedule={schedule}
-                status={getCourseStatus(course, schedule, currentDate)}
+                status={getCourseStatus(course, schedule, statusDate)}
                 onClick={() => handleCardClick(course.id)}
               />
             ))
