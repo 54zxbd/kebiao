@@ -98,6 +98,11 @@ export async function parseTimetableExcel(file: File): Promise<ParsedTimetableEx
     throw new Error('Excel 文件内容为空');
   }
 
+  // 周历式课表（日期横向排布、星期为单字、"第X大节"）：部分教务系统（如洛阳理工）的导出格式
+  if (isWeeklyTimetable(data)) {
+    return parseWeeklyTimetable(data);
+  }
+
   // 1. 找到表头行（包含"节次"和"星期一"等关键词）
   const headerRowIndex = findHeaderRow(data);
   if (headerRowIndex === -1) {
@@ -173,18 +178,23 @@ export async function parseTimetableExcel(file: File): Promise<ParsedTimetableEx
   };
 }
 
-/** 查找表头行索引（包含"节次"和"星期一"） */
+/** 查找表头行索引（包含星期列的标题行） */
 function findHeaderRow(data: string[][]): number {
-  for (let i = 0; i < Math.min(data.length, 10); i++) {
+  // 放宽搜索范围：教务系统导出的文件顶部常有学校信息、学年学期标题、空行等，表头可能不在前 10 行
+  const searchLimit = Math.min(data.length, 50);
+  for (let i = 0; i < searchLimit; i++) {
     const row = data[i];
-    const rowStr = row.join(' ');
-    if (rowStr.includes('节次') && rowStr.includes('星期一')) {
-      return i;
-    }
-    // 兼容"节 次"或"星期"等变体
-    if (/节[次\s]?/.test(rowStr) && /星期[一二三四五六日]/.test(rowStr)) {
-      return i;
-    }
+    if (!row || row.length === 0) continue;
+    // 去掉所有空白（空格、换行、全角空格），兼容"节 次"、"星 期 一"、单元格内换行等排版变体
+    const compact = (row.join(' ')).replace(/\s+/g, '');
+    if (!compact) continue;
+
+    // 表头判据：一行中至少出现 3 个星期列（"星期一~星期日"或"周一~周日"）。
+    // 不依赖"节次"字样，兼容节次列写成"时间"、缺失等变体；数据行不会同时出现多个星期。
+    const weekdayCount =
+      (compact.match(/星期[一二三四五六日]/g) ?? []).length +
+      (compact.match(/周[一二三四五六日]/g) ?? []).length;
+    if (weekdayCount >= 3) return i;
   }
   return -1;
 }
@@ -216,7 +226,8 @@ function findDayColumns(headerRow: string[]): DayColumn[] {
   };
 
   for (let i = 0; i < headerRow.length; i++) {
-    const cell = (headerRow[i] || '').trim();
+    // 去除单元格内部空白，兼容"星 期 一"、单元格内换行等写法
+    const cell = (headerRow[i] || '').replace(/\s+/g, '');
     for (const [key, day] of Object.entries(dayMap)) {
       if (cell.includes(key)) {
         result.push({ dayOfWeek: day, colIndex: i });
@@ -231,8 +242,9 @@ function findDayColumns(headerRow: string[]): DayColumn[] {
 /** 找出节次列索引 */
 function findPeriodColumn(headerRow: string[]): number {
   for (let i = 0; i < headerRow.length; i++) {
-    const cell = (headerRow[i] || '').trim();
-    if (cell.includes('节次') || cell.includes('节 次') || /^节\s*次$/.test(cell)) {
+    // 去除单元格内部空白，兼容"节 次"等写法
+    const cell = (headerRow[i] || '').replace(/\s+/g, '');
+    if (cell.includes('节次') || /^节次$/.test(cell)) {
       return i;
     }
   }
@@ -466,4 +478,277 @@ export function parsedCourseToICourse(parsed: ParsedCourseInfo): ICourse {
     scope: 'whole-semester',
     createdAt: Date.now(),
   };
+}
+
+/* ==================== 周历式课表解析（日期横向排布） ==================== */
+
+/**
+ * 检测是否为"周历式"课表：
+ * 特征——存在第 0 列为"星期"的表头行（其他列为"一、二…日"单字），
+ * 且存在"第X大节"行（洛阳理工等教务系统的导出格式）。
+ */
+function isWeeklyTimetable(data: string[][]): boolean {
+  let hasWeekdayHeader = false;
+  let hasPeriodRow = false;
+  for (const row of data) {
+    if (!row || row.length === 0) continue;
+    const first = String(row[0] ?? '').replace(/\s+/g, '');
+    if (first.includes('星期')) hasWeekdayHeader = true;
+    if (/第[一二三四五六七]大节/.test(first)) hasPeriodRow = true;
+    if (hasWeekdayHeader && hasPeriodRow) return true;
+  }
+  return false;
+}
+
+/**
+ * 解析周历式课表。结构（每个表段 3 周，纵向重复堆叠）：
+ *   标题行（"曾祥禄2026-2027-1课表"）
+ *   周次行："周次\n日期" | 第1周(跨7列) | 第2周 | 第3周
+ *   日期行：空 | 09-07 | 09-08 | ...
+ *   星期行："星期" | 一 | 二 | ... | 日（重复）
+ *   节次行："第一大节"~"第七大节"，其他列为课程单元格
+ * 课程单元格为多行文本：课程名[性质] / 教师 / 周次-节次(如 1-0102，或 -1-) / 教室
+ */
+function parseWeeklyTimetable(data: string[][]): ParsedTimetableExcel {
+  const rawCourses: ParsedCourseInfo[] = [];
+  const colorAssignments = new Map<string, string>();
+  let colorIndex = 0;
+
+  // 学年推断：从标题行提取（"2026-2027-1" → 2026）
+  let year = new Date().getFullYear();
+  for (const row of data) {
+    const text = (row ?? []).join(' ');
+    const m = text.match(/(20\d{2})[年-](\d{4})/);
+    if (m) {
+      year = Number(m[1]);
+      break;
+    }
+  }
+
+  let detectedStartDate: string | undefined;
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    if (!row || row.length < 2) continue;
+    const first = String(row[0] ?? '').replace(/\s+/g, '');
+
+    // 星期表头行 → 一个表段开始
+    if (!first.includes('星期')) continue;
+
+    const dateRow = data[i - 1] ?? [];
+    const weekRow = data[i - 2] ?? [];
+
+    // 每周起始列 → 周次号（周次行中"第N周"的列）
+    const weekStarts: { col: number; week: number }[] = [];
+    for (let c = 1; c < weekRow.length; c++) {
+      const m = String(weekRow[c] ?? '').match(/第(\d+)周/);
+      if (m) weekStarts.push({ col: c, week: Number(m[1]) });
+    }
+
+    // 表段内所有节次行
+    for (let r = i + 1; r < data.length; r++) {
+      const periodRow = data[r];
+      if (!periodRow || periodRow.length === 0) break;
+      const periodCell = String(periodRow[0] ?? '').trim();
+      const pm = periodCell.match(/第([一二三四五六七])大节/);
+      if (!pm) break; // 节次行结束（下一表段或文件末尾）
+
+      const periodIdx = '一二三四五六七'.indexOf(pm[1]);
+      const startPeriod = periodIdx * 2 + 1;
+      const endPeriod = periodIdx * 2 + 2;
+
+      for (let c = 1; c < periodRow.length; c++) {
+        const cellText = String(periodRow[c] ?? '');
+        if (!cellText.trim()) continue;
+
+        const dayOfWeek = ((c - 1) % 7) + 1; // 1=周一 ... 7=周日
+        const colWeek = getWeekForCol(c, weekStarts);
+
+        const cellCourses = parseWeeklyCell(cellText, dayOfWeek, startPeriod, endPeriod, colWeek);
+        for (const cc of cellCourses) {
+          let color = colorAssignments.get(cc.name);
+          if (!color) {
+            color = COURSE_COLORS[colorIndex % COURSE_COLORS.length];
+            colorAssignments.set(cc.name, color);
+            colorIndex++;
+          }
+          rawCourses.push({ ...cc, color });
+        }
+      }
+    }
+
+    // 学期第 1 周周一 = 第一个表段日期行的第 1 列
+    if (!detectedStartDate && dateRow.length > 1) {
+      detectedStartDate = normalizeTimetableDate(String(dateRow[1] ?? ''), year);
+    }
+  }
+
+  if (rawCourses.length === 0) {
+    throw new Error('未解析到任何课程，请检查文件格式');
+  }
+
+  return {
+    courses: mergeWeeklyCourses(rawCourses),
+    detectedStartDate,
+  };
+}
+
+/** 将 "09-07" / "09.28" 解析为带学年的日期；学年第一学期 9-12 月属起始年、1-8 月属次年 */
+function normalizeTimetableDate(text: string, year: number): string | undefined {
+  const m = text.match(/(\d{1,2})[-./](\d{1,2})/);
+  if (!m) return undefined;
+  const month = Number(m[1]);
+  const day = Number(m[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  const y = month >= 9 ? year : year + 1;
+  return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/** 列位置 → 周次号（每周占 7 列） */
+function getWeekForCol(col: number, weekStarts: { col: number; week: number }[]): number | undefined {
+  for (const ws of weekStarts) {
+    if (col >= ws.col && col < ws.col + 7) return ws.week;
+  }
+  return undefined;
+}
+
+/** 解析单个课程单元格（可能含多门课，空行分隔） */
+function parseWeeklyCell(
+  cellText: string,
+  dayOfWeek: number,
+  startPeriod: number,
+  endPeriod: number,
+  fallbackWeek?: number,
+): ParsedCourseInfo[] {
+  const result: ParsedCourseInfo[] = [];
+
+  // 按空行分组
+  const groups: string[][] = [];
+  let current: string[] = [];
+  for (const raw of cellText.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) {
+      if (current.length > 0) {
+        groups.push(current);
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) groups.push(current);
+
+  for (const g of groups) {
+    if (g.length === 0) continue;
+    const course = parseWeeklyCourseGroup(g, dayOfWeek, startPeriod, endPeriod, fallbackWeek);
+    if (course) result.push(course);
+  }
+
+  return result;
+}
+
+/** 解析一门课的 3-4 行文本：课程名[性质] / 教师 / 周次-节次或 -1- / 教室 */
+function parseWeeklyCourseGroup(
+  g: string[],
+  dayOfWeek: number,
+  startPeriod: number,
+  endPeriod: number,
+  fallbackWeek?: number,
+): ParsedCourseInfo | null {
+  const name = (g[0] ?? '').replace(/\[.*?\]/g, '').trim();
+  if (!name) return null;
+
+  let teacher = '';
+  let location = '';
+  let week = fallbackWeek;
+
+  for (let j = 1; j < g.length; j++) {
+    const line = g[j];
+    if (!line) continue;
+
+    // 周次-节次："1-0102"、"10-0102" → 周次 1 / 10
+    const wm = line.match(/^(\d{1,2})-(\d{2})(\d{2})$/);
+    if (wm) {
+      week = Number(wm[1]);
+      continue;
+    }
+    // 无固定教室标记
+    if (line === '-1-') continue;
+    // 教室：字母+数字（XD305、XA1、XB4 等）
+    if (/^[A-Za-z]{1,4}\d{1,4}[A-Za-z]?$/.test(line)) {
+      location = line;
+      continue;
+    }
+    // 教师：2-4 个中文字或带称谓
+    if (!teacher && looksLikeTeacher(line)) {
+      teacher = line;
+      continue;
+    }
+    // 兜底：较短且无数字的文本视为教师
+    if (!teacher && line.length <= 10 && !/\d/.test(line) && !/[\[\]]/.test(line)) {
+      teacher = line;
+    }
+  }
+
+  const weekRange = week ? [week] : [];
+
+  return {
+    name,
+    teacher,
+    location,
+    dayOfWeek,
+    startPeriod,
+    endPeriod,
+    weekRange,
+    weekRangeText: week ? `第${week}周` : '全学期',
+    color: '',
+  };
+}
+
+/** 聚合同一门课（同名+同教师+同星期+同节次）在不同周次的记录，合并周次、保留最后教室 */
+function mergeWeeklyCourses(raw: ParsedCourseInfo[]): ParsedCourseInfo[] {
+  const merged = new Map<string, { info: ParsedCourseInfo; weeks: Set<number> }>();
+
+  for (const c of raw) {
+    const key = `${c.name}|${c.teacher}|${c.dayOfWeek}|${c.startPeriod}|${c.endPeriod}`;
+    const exist = merged.get(key);
+    if (exist) {
+      c.weekRange.forEach((w) => exist.weeks.add(w));
+      if (c.location) exist.info.location = c.location;
+    } else {
+      merged.set(key, { info: { ...c }, weeks: new Set(c.weekRange) });
+    }
+  }
+
+  const result: ParsedCourseInfo[] = [];
+  for (const { info, weeks } of merged.values()) {
+    const sorted = Array.from(weeks).sort((a, b) => a - b);
+    result.push({
+      ...info,
+      weekRange: sorted,
+      weekRangeText: formatWeekRangeText(sorted),
+    });
+  }
+  return result;
+}
+
+/** 将周次数组压缩为展示文本："1-5,8-10周" */
+function formatWeekRangeText(weeks: number[]): string {
+  if (weeks.length === 0) return '全学期';
+  const parts: string[] = [];
+  let start = weeks[0];
+  let prev = weeks[0];
+  for (let i = 1; i <= weeks.length; i++) {
+    const w = weeks[i];
+    if (w === prev + 1) {
+      prev = w;
+      continue;
+    }
+    parts.push(start === prev ? `${start}` : `${start}-${prev}`);
+    if (w !== undefined) {
+      start = w;
+      prev = w;
+    }
+  }
+  return `${parts.join(',')}周`;
 }
