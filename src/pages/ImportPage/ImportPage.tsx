@@ -407,14 +407,20 @@ export default function ImportPage() {
                 type="file"
                 accept=".xls,.xlsx"
                 onChange={handleFileSelect}
-                className="hidden"
+                className="sr-only"
                 id="excel-upload"
               />
               <label
                 htmlFor="excel-upload"
-                className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border/60 bg-card px-4 py-8 text-center transition-colors hover:border-primary/40 hover:bg-primary/5"
+                onClick={(e) => {
+                  // 移动端（iOS Safari / 微信等 WebView）无法通过 label 隐式触发 display:none 的 file input，
+                  // 改为同步手势内手动 click()，兼容所有浏览器
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }}
+                className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border/60 bg-card px-4 py-8 text-center transition-colors hover:border-primary/40 hover:bg-primary/5 active:bg-primary/5"
               >
-                <FileSpreadsheet className="size-10 text-muted-foreground" />
+                <FileSpreadsheet className="pointer-events-none size-10 text-muted-foreground" />
                 <div className="text-sm font-medium">点击选择 Excel 文件</div>
                 <div className="text-xs text-muted-foreground">
                   支持 .xls 和 .xlsx 格式（正方教务系统导出格式）
@@ -665,10 +671,18 @@ export default function ImportPage() {
                 type="file"
                 accept=".xls,.xlsx,.json"
                 onChange={handleSupportingFileSelect}
-                className="hidden"
+                className="sr-only"
               />
               <Button asChild variant="secondary" className="w-full">
-                <label htmlFor="supporting-timetable-upload" className="cursor-pointer">
+                <label
+                  htmlFor="supporting-timetable-upload"
+                  className="cursor-pointer"
+                  onClick={(e) => {
+                    // 同上：移动端 WebView 对 label 隐式触发隐藏 file input 支持不稳定，改为手动 click()
+                    e.preventDefault();
+                    supportingFileInputRef.current?.click();
+                  }}
+                >
                   <Upload className="mr-2 size-4" />
                   上传含日期的补充课表
                 </label>
